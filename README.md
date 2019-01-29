@@ -1,5 +1,7 @@
 ## Up and running | Mac OS
 
+[Blog Post](https://towardsdatascience.com/ocr-with-akka-tesseract-and-javacv-part-1-702781fc73ca)
+
 ```
 brew install tesseract
 ```
