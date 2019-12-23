@@ -6,6 +6,7 @@ import akka.http.scaladsl.Http
 import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.common.{EntityStreamingSupport, JsonEntityStreamingSupport}
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport
+import akka.http.scaladsl.model.StatusCodes
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Sink, Source, StreamConverters}
 import akka.util.ByteString
@@ -13,14 +14,15 @@ import com.recognition.software.jdeskew.{ImageDeskew, ImageUtil}
 import javax.imageio.ImageIO
 import net.sourceforge.tess4j.Tesseract
 import net.sourceforge.tess4j.util.ImageHelper
-import org.bytedeco.javacpp.opencv_core._
+import opennlp.tools.sentdetect.SentenceModel
 import spray.json.{DefaultJsonProtocol, RootJsonFormat}
 import org.bytedeco.javacv.Java2DFrameUtils
 import org.bytedeco.javacpp.indexer.UByteRawIndexer
+import org.bytedeco.javacpp.opencv_core._
 
 import scala.concurrent.ExecutionContextExecutor
 
-object Main extends App with OCR with Spell {
+object Main extends App with OCR with Spell with NLP {
   implicit val system: ActorSystem = ActorSystem("ocr")
   implicit val executor: ExecutionContextExecutor = system.dispatcher
   implicit val materializer: ActorMaterializer = ActorMaterializer()
@@ -67,7 +69,7 @@ object Main extends App with OCR with Spell {
     val src = mat.clone()
     Photo.fastNlMeansDenoising(mat, src, 40, 7, 21)
     val dst = src.clone()
-    Photo.detailEnhance(src,dst)
+    Photo.detailEnhance(src, dst)
     dst
   })
 
@@ -102,6 +104,13 @@ object Main extends App with OCR with Spell {
     edges
   })
 
+  import org.bytedeco.javacpp.{opencv_core => Core}
+  def minArea = Flow[Mat].map(src => {
+    val markers = Mat.zeros(src.size(), CV_32SC1).asMat()
+    Core.findNonZero(src,markers)
+    val rotatedRect: RotatedRect = Imgproc.minAreaRect(markers)
+  })
+
   def spellCheck = Flow[String].map(ocr => {
     import scala.collection.JavaConverters._
     val words: Set[String] = ocr.replaceAll("\n", " ").split("\\s+")
@@ -116,10 +125,7 @@ object Main extends App with OCR with Spell {
     OcrString(ocr, suggestions)
   })
 
-  def imageOcr = Flow[BufferedImage].map(bi => {
-    val ocr = tesseract.doOCR(bi)
-    ocr
-  })
+  def imageOcr = Flow[BufferedImage].map(tesseract.doOCR)
 
   def imageWriter(format:String = "png") = Flow[BufferedImage].map(bi => {
     val ri = bi.asInstanceOf[RenderedImage]
@@ -139,11 +145,12 @@ object Main extends App with OCR with Spell {
     ImageIO.write(bi, format, new File(path))
   })
 
-  val enhanceFlow = imageToBinaryImage.alsoTo(imageSink("binary.png"))
-    .via(bufferedImageToMat)
-    .via(enhanceMat)
-    .via(matToBufferedImage).alsoTo(imageSink("enhanced.png"))
-    .via(imageDeSkew())
+  val imageEnhance = bufferedImageToMat.via(enhanceMat).via(matToBufferedImage)
+
+  val imagePreProcessFlow =
+    imageToBinaryImage.alsoTo(imageSink("binary.png"))
+    .via(imageEnhance).alsoTo(imageSink("enhanced.png"))
+    .via(imageDeSkew()).alsoTo(imageSink("deskew.png"))
 
   val ocrFlow = imageOcr
     .via(spellCheck)
@@ -164,12 +171,21 @@ object Main extends App with OCR with Spell {
 //    val deskew = builder.add(imageDeSkew())
 //    val edgeDetect = builder.add(edgeDetectMat)
 //    val edgeSink = builder.add(imageSink("edge.png"))
-//
+
 //    img2Binary ~> buff2Mat ~> broadcast ~> enhance ~> mat2Buff ~> deskew
 //                              broadcast ~> edgeDetect ~> mat2Buff2 ~> edgeSink
-//
+
 //    FlowShape(img2Binary.in, deskew.out)
 //  }
+
+  val staticResources =
+    get {
+      (pathEndOrSingleSlash & redirectToTrailingSlashIfMissing(StatusCodes.TemporaryRedirect)) {
+        getFromResource("public/index.html")
+      } ~ {
+        getFromResourceDirectory("public")
+      }
+    }
 
   val route = path("image" / "ocr") {
     post {
@@ -177,16 +193,12 @@ object Main extends App with OCR with Spell {
         case (_, fileStream) =>
           val inputStream = fileStream.runWith(StreamConverters.asInputStream())
           val image = ImageIO.read(inputStream)
-
-          val ocr = Source
-            .single(image).alsoTo(edgeSink)
-            .via(enhanceFlow)
-            .via(ocrFlow)
+          val ocr = Source.single(image).via(imagePreProcessFlow).via(ocrFlow)
 
           complete(ocr)
       }
     }
-  }
+  } ~ staticResources
 
   Http().bindAndHandle(route, "localhost", 8080)
 }
@@ -194,13 +206,17 @@ object Main extends App with OCR with Spell {
 case class OcrString(ocr:String, suggestions: Set[Map[String, List[String]]])
 
 trait OCR {
-  val tesseract: Tesseract = new Tesseract
+  lazy val tesseract: Tesseract = new Tesseract
   tesseract.setDatapath("/usr/local/Cellar/tesseract/4.0.0/share/tessdata/")
 }
 
 trait Spell {
   import com.atlascopco.hunspell.Hunspell
-  val speller = new Hunspell("en_US.dic", "en_US.aff")
+  lazy val speller = new Hunspell("src/main/resources/en_US.dic", "src/main/resources/en_US.aff")
+}
+
+trait NLP {
+  lazy val model = new SentenceModel(getClass.getResourceAsStream("/en-sent.bin"))
 }
 
 object MyJsonProtocol

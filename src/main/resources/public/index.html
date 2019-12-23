@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h1>Submit Photo</h1>
+
+<h3 id="status">Select image to upload</h3>
+
+<form id="imageUpload" action="image/ocr" method="post" enctype="multipart/form-data">
+    <input type="file" name="fileUpload" id="fileUpload">
+    <input type="submit" value="Upload Image" name="submit">
+</form>
+
+<p id="output"></p>
+<p id="suggestions"></p>
+
+</body>
+
+<script>
+    document.forms['imageUpload'].addEventListener('submit', (event) => {
+        event.preventDefault();
+
+        var status = document.getElementById('status');
+        var output = document.getElementById('output');
+        var suggestions = document.getElementById('suggestions');
+
+        status.textContent = 'Uploading';
+        suggestions.innerHTML = '';
+        output.textContent = '';
+        fetch(event.target.action, {
+            method: 'POST',
+            body: new FormData(event.target) // event.target is the form
+        }).then((resp) => {
+            return resp.json();
+        }).then((body) => {
+            status.textContent = 'Converted';
+            output.textContent = body[0].ocr;
+
+            suggestions.innerHTML = '<ul>';
+            body[0].suggestions.forEach((suggestion) => {
+                suggestions.innerHTML += '<li>' + Object.keys(suggestion)[0] + ' - ' + Object.values(suggestion)[0] + '</li>';
+            });
+            suggestions.innerHTML += '</ul>';
+        }).catch((error) => {
+            status.textContent = error;
+            output.textContent = '';
+            suggestions.innerHTML = '';
+        });
+    });
+</script>
+</html>

@@ -24,3 +24,5 @@ target/
 .scala_dependencies
 .worksheet
 .DS_Store
+.metals/
+.bloop/
